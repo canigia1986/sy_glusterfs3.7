@@ -119,8 +119,8 @@ class GLogger(Logger):
         gconf.log_exit = True
 
 
-# Given slave host and its volume name, get corresponding volume uuid
-def slave_vol_uuid_get(host, vol):
+# Given subordinate host and its volume name, get corresponding volume uuid
+def subordinate_vol_uuid_get(host, vol):
     po = subprocess.Popen(['gluster', '--xml', '--remote-host=' + host,
                            'volume', 'info', vol], bufsize=0,
                           stdin=None, stdout=PIPE, stderr=PIPE)
@@ -217,8 +217,8 @@ def main_i():
     - start service in following modes, in given stages:
       - agent: startup(), ChangelogAgent()
       - monitor: startup(), monitor()
-      - master: startup(), connect_remote(), connect(), service_loop()
-      - slave: startup(), connect(), service_loop()
+      - main: startup(), connect_remote(), connect(), service_loop()
+      - subordinate: startup(), connect(), service_loop()
     """
     rconf = {'go_daemon': 'should'}
 
@@ -238,7 +238,7 @@ def main_i():
             o, oo, FreeObject(op=op, **dmake(vx)), p)
 
     op = OptionParser(
-        usage="%prog [options...] <master> <slave>", version="%prog 0.0.1")
+        usage="%prog [options...] <main> <subordinate>", version="%prog 0.0.1")
     op.add_option('--gluster-command-dir', metavar='DIR', default='')
     op.add_option('--gluster-log-file', metavar='LOGF',
                   default=os.devnull, type=str, action='callback',
@@ -268,7 +268,7 @@ def main_i():
     op.add_option('--georep-session-working-dir', metavar='STATF',
                   type=str, action='callback', callback=store_abs)
     op.add_option('--ignore-deletes', default=False, action='store_true')
-    op.add_option('--isolated-slave', default=False, action='store_true')
+    op.add_option('--isolated-subordinate', default=False, action='store_true')
     op.add_option('--use-rsync-xattrs', default=False, action='store_true')
     op.add_option('--sync-xattrs', default=True, action='store_true')
     op.add_option('--sync-acls', default=True, action='store_true')
@@ -279,7 +279,7 @@ def main_i():
     op.add_option('-r', '--remote-gsyncd', metavar='CMD',
                   default=os.path.abspath(sys.argv[0]))
     op.add_option('--volume-id', metavar='UUID')
-    op.add_option('--slave-id', metavar='ID')
+    op.add_option('--subordinate-id', metavar='ID')
     op.add_option('--session-owner', metavar='ID')
     op.add_option('--local-id', metavar='ID', help=SUPPRESS_HELP, default='')
     op.add_option(
@@ -351,7 +351,7 @@ def main_i():
                   action='callback', callback=store_local_curry('dont'))
     op.add_option('--verify', type=str, dest="verify",
                   action='callback', callback=store_local)
-    op.add_option('--slavevoluuid-get', type=str, dest="slavevoluuid_get",
+    op.add_option('--subordinatevoluuid-get', type=str, dest="subordinatevoluuid_get",
                   action='callback', callback=store_local)
     op.add_option('--create', type=str, dest="create",
                   action='callback', callback=store_local)
@@ -416,24 +416,24 @@ def main_i():
     # the parser with virgin values container.
     defaults = op.get_default_values()
     opts, args = op.parse_args(values=optparse.Values())
-    # slave url cleanup, if input comes with vol uuid as follows
+    # subordinate url cleanup, if input comes with vol uuid as follows
     # 'ssh://fvm1::gv2:07dfddca-94bb-4841-a051-a7e582811467'
     temp_args = []
     for arg in args:
         # Split based on ::
         data = arg.split("::")
         if len(data)>1:
-            slavevol_name = data[1].split(":")[0]
-            temp_args.append("%s::%s" % (data[0], slavevol_name))
+            subordinatevol_name = data[1].split(":")[0]
+            temp_args.append("%s::%s" % (data[0], subordinatevol_name))
         else:
             temp_args.append(data[0])
     args = temp_args
     args_orig = args[:]
 
-    voluuid_get = rconf.get('slavevoluuid_get')
+    voluuid_get = rconf.get('subordinatevoluuid_get')
     if voluuid_get:
-        slave_host, slave_vol = voluuid_get.split("::")
-        svol_uuid = slave_vol_uuid_get(slave_host, slave_vol)
+        subordinate_host, subordinate_vol = voluuid_get.split("::")
+        svol_uuid = subordinate_vol_uuid_get(subordinate_host, subordinate_vol)
         print svol_uuid
         return
 
@@ -523,9 +523,9 @@ def main_i():
         mods = (lambda x: x, lambda x: x[
                 0].upper() + x[1:], lambda x: 'e' + x[0].upper() + x[1:])
         if remote:
-            rmap = {local: ('local', 'master'), remote: ('remote', 'slave')}
+            rmap = {local: ('local', 'main'), remote: ('remote', 'subordinate')}
         else:
-            rmap = {local: ('local', 'slave')}
+            rmap = {local: ('local', 'subordinate')}
         namedict = {}
         for i in range(len(rscs)):
             x = rscs[i]
@@ -578,7 +578,7 @@ def main_i():
         logging.info('geo-replication delete')
         # remove the stime xattr from all the brick paths so that
         # a re-create of a session will start sync all over again
-        stime_xattr_name = getattr(gconf, 'master.stime_xattr_name', None)
+        stime_xattr_name = getattr(gconf, 'main.stime_xattr_name', None)
 
         # Delete pid file, status file, socket file
         cleanup_paths = []
@@ -621,8 +621,8 @@ def main_i():
                 stripped_path = p.strip()
                 if stripped_path != "":
                     # set stime to (0,0) to trigger full volume content resync
-                    # to slave on session recreation
-                    # look at master.py::Xcrawl   hint: zero_zero
+                    # to subordinate on session recreation
+                    # look at main.py::Xcrawl   hint: zero_zero
                     Xattr.lsetxattr(stripped_path, stime_xattr_name,
                                     struct.pack("!II", 0, 0))
 
@@ -714,10 +714,10 @@ def main_i():
     elif be_agent:
         label = 'agent'
     elif remote:
-        # master
+        # main
         label = gconf.local_path
     else:
-        label = 'slave'
+        label = 'subordinate'
     startup(go_daemon=go_daemon, log_file=log_file, label=label)
     resource.Popen.init_errhandler()
 
